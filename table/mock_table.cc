@@ -1,9 +1,7 @@
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file. See the AUTHORS file for names of contributors.
-//  Copyright (c) 2013, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 
 #include "table/mock_table.h"
 
@@ -29,12 +27,13 @@ stl_wrappers::KVMap MakeMockFile(
 }
 
 InternalIterator* MockTableReader::NewIterator(const ReadOptions&,
-                                               Arena* arena) {
+                                               Arena* arena,
+                                               bool skip_filters) {
   return new MockTableIterator(table_);
 }
 
 Status MockTableReader::Get(const ReadOptions&, const Slice& key,
-                            GetContext* get_context) {
+                            GetContext* get_context, bool skip_filters) {
   std::unique_ptr<MockTableIterator> iter(new MockTableIterator(table_));
   for (iter->Seek(key); iter->Valid(); iter->Next()) {
     ParsedInternalKey parsed_key;
@@ -59,7 +58,8 @@ MockTableFactory::MockTableFactory() : next_id_(1) {}
 Status MockTableFactory::NewTableReader(
     const TableReaderOptions& table_reader_options,
     unique_ptr<RandomAccessFileReader>&& file, uint64_t file_size,
-    unique_ptr<TableReader>* table_reader) const {
+    unique_ptr<TableReader>* table_reader,
+    bool prefetch_index_and_filter_in_cache) const {
   uint32_t id = GetIDFromFile(file.get());
 
   MutexLock lock_guard(&file_system_.mutex);
@@ -116,7 +116,7 @@ uint32_t MockTableFactory::GetIDFromFile(RandomAccessFileReader* file) const {
 void MockTableFactory::AssertSingleFile(
     const stl_wrappers::KVMap& file_contents) {
   ASSERT_EQ(file_system_.files.size(), 1U);
-  ASSERT_TRUE(file_contents == file_system_.files.begin()->second);
+  ASSERT_EQ(file_contents, file_system_.files.begin()->second);
 }
 
 void MockTableFactory::AssertLatestFile(
@@ -134,7 +134,7 @@ void MockTableFactory::AssertLatestFile(
       ParseInternalKey(Slice(key), &ikey);
       std::cout << ikey.DebugString(false) << " -> " << value << std::endl;
     }
-    ASSERT_TRUE(false);
+    FAIL();
   }
 }
 

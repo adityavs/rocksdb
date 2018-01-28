@@ -1,7 +1,7 @@
-//  Copyright (c) 2013, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 //
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
@@ -18,8 +18,12 @@ namespace rocksdb {
 // package.
 class Random {
  private:
-  static constexpr uint32_t M = 2147483647L;  // 2^31-1
-  static constexpr uint64_t A = 16807;        // bits 14, 8, 7, 5, 2, 1, 0
+  enum : uint32_t {
+    M = 2147483647L  // 2^31-1
+  };
+  enum : uint64_t {
+    A = 16807  // bits 14, 8, 7, 5, 2, 1, 0
+  };
 
   uint32_t seed_;
 
@@ -27,7 +31,7 @@ class Random {
 
  public:
   // This is the largest value that can be returned from Next()
-  static constexpr uint32_t kMaxNext = M;
+  enum : uint32_t { kMaxNext = M };
 
   explicit Random(uint32_t s) : seed_(GoodSeed(s)) {}
 
@@ -98,7 +102,7 @@ class Random64 {
   // return "base" random bits.  The effect is to pick a number in the
   // range [0,2^max_log-1] with exponential bias towards smaller numbers.
   uint64_t Skewed(int max_log) {
-    return Uniform(1 << Uniform(max_log + 1));
+    return Uniform(uint64_t(1) << Uniform(max_log + 1));
   }
 };
 

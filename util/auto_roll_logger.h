@@ -1,7 +1,7 @@
-//  Copyright (c) 2013, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 //
 // Logger implementation that can be shared by all environments
 // where enough posix functionality is available.
@@ -10,12 +10,15 @@
 #include <list>
 #include <string>
 
-#include "db/filename.h"
 #include "port/port.h"
 #include "port/util_logger.h"
+#include "util/filename.h"
+#include "util/mutexlock.h"
+#include "util/sync_point.h"
 
 namespace rocksdb {
 
+#ifndef ROCKSDB_LITE
 // Rolls the log file by size and/or time
 class AutoRollLogger : public Logger {
  public:
@@ -53,11 +56,26 @@ class AutoRollLogger : public Logger {
     return status_;
   }
 
-  size_t GetLogFileSize() const override { return logger_->GetLogFileSize(); }
+  size_t GetLogFileSize() const override {
+    std::shared_ptr<Logger> logger;
+    {
+      MutexLock l(&mutex_);
+      // pin down the current logger_ instance before releasing the mutex.
+      logger = logger_;
+    }
+    return logger->GetLogFileSize();
+  }
 
   void Flush() override {
-    if (logger_) {
-      logger_->Flush();
+    std::shared_ptr<Logger> logger;
+    {
+      MutexLock l(&mutex_);
+      // pin down the current logger_ instance before releasing the mutex.
+      logger = logger_;
+    }
+    TEST_SYNC_POINT("AutoRollLogger::Flush:PinnedLogger");
+    if (logger) {
+      logger->Flush();
     }
   }
 
@@ -73,6 +91,8 @@ class AutoRollLogger : public Logger {
     return log_fname_;
   }
 
+  uint64_t TEST_ctime() const { return ctime_; }
+
  private:
   bool LogExpired();
   Status ResetLogger();
@@ -83,6 +103,14 @@ class AutoRollLogger : public Logger {
   std::string ValistToString(const char* format, va_list args) const;
   // Write the logs marked as headers to the new log file
   void WriteHeaderInfo();
+  // Implementation of Close()
+  virtual Status CloseImpl() override {
+    if (logger_) {
+      return logger_->Close();
+    } else {
+      return Status::OK();
+    }
+  }
 
   std::string log_fname_; // Current active info log's file name.
   std::string dbname_;
@@ -101,8 +129,9 @@ class AutoRollLogger : public Logger {
   uint64_t ctime_;
   uint64_t cached_now_access_count;
   uint64_t call_NowMicros_every_N_records_;
-  port::Mutex mutex_;
+  mutable port::Mutex mutex_;
 };
+#endif  // !ROCKSDB_LITE
 
 // Facade to craete logger automatically
 Status CreateLoggerFromOptions(const std::string& dbname,

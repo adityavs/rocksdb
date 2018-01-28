@@ -1,7 +1,7 @@
-//  Copyright (c) 2013, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 //
 #ifndef ROCKSDB_LITE
 
@@ -11,12 +11,12 @@
 #define __STDC_FORMAT_MACROS
 #endif
 
-#include <vector>
+#include <limits>
 #include <map>
 #include <string>
-#include <limits>
-#include "db/filename.h"
+#include <vector>
 #include "util/coding.h"
+#include "util/filename.h"
 #include "util/string_util.h"
 
 //
@@ -352,8 +352,8 @@ Status GeoDBImpl::searchQuadIds(const GeoPosition& position,
   Pixel bottomRight =  PositionToPixel(bottomRightPos, Detail);
 
   // how many level of details to look for
-  int numberOfTilesAtMaxDepth = floor((bottomRight.x - topLeft.x) / 256);
-  int zoomLevelsToRise = floor(::log(numberOfTilesAtMaxDepth) / ::log(2));
+  int numberOfTilesAtMaxDepth = static_cast<int>(std::floor((bottomRight.x - topLeft.x) / 256));
+  int zoomLevelsToRise = static_cast<int>(std::floor(std::log(numberOfTilesAtMaxDepth) / std::log(2)));
   zoomLevelsToRise++;
   int levels = std::max(0, Detail - zoomLevelsToRise);
 
@@ -390,10 +390,10 @@ GeoDBImpl::Pixel GeoDBImpl::PositionToPixel(const GeoPosition& pos,
   double latitude = clip(pos.latitude, MinLatitude, MaxLatitude);
   double x = (pos.longitude + 180) / 360;
   double sinLatitude = sin(latitude * PI / 180);
-  double y = 0.5 - ::log((1 + sinLatitude) / (1 - sinLatitude)) / (4 * PI);
+  double y = 0.5 - std::log((1 + sinLatitude) / (1 - sinLatitude)) / (4 * PI);
   double mapSize = MapSize(levelOfDetail);
-  double X = floor(clip(x * mapSize + 0.5, 0, mapSize - 1));
-  double Y = floor(clip(y * mapSize + 0.5, 0, mapSize - 1));
+  double X = std::floor(clip(x * mapSize + 0.5, 0, mapSize - 1));
+  double Y = std::floor(clip(y * mapSize + 0.5, 0, mapSize - 1));
   return Pixel((unsigned int)X, (unsigned int)Y);
 }
 
@@ -408,8 +408,8 @@ GeoPosition GeoDBImpl::PixelToPosition(const Pixel& pixel, int levelOfDetail) {
 
 // Converts a Pixel to a Tile
 GeoDBImpl::Tile GeoDBImpl::PixelToTile(const Pixel& pixel) {
-  unsigned int tileX = floor(pixel.x / 256);
-  unsigned int tileY = floor(pixel.y / 256);
+  unsigned int tileX = static_cast<unsigned int>(std::floor(pixel.x / 256));
+  unsigned int tileY = static_cast<unsigned int>(std::floor(pixel.y / 256));
   return Tile(tileX, tileY);
 }
 
