@@ -93,11 +93,19 @@ static const int kMinorVersion = __ROCKSDB_MINOR__;
 
 // A range of keys
 struct Range {
-  Slice start;          // Included in the range
-  Slice limit;          // Not included in the range
+  Slice start;
+  Slice limit;
 
   Range() { }
   Range(const Slice& s, const Slice& l) : start(s), limit(l) { }
+};
+
+struct RangePtr {
+  const Slice* start;
+  const Slice* limit;
+
+  RangePtr() : start(nullptr), limit(nullptr) { }
+  RangePtr(const Slice* s, const Slice* l) : start(s), limit(l) { }
 };
 
 // A collections of table properties objects, where
@@ -164,10 +172,14 @@ class DB {
                      std::vector<ColumnFamilyHandle*>* handles, DB** dbptr);
 
   // Close the DB by releasing resources, closing files etc. This should be
-  // called before calling the desctructor so that the caller can get back a
-  // status in case there are any errors. Regardless of the return status, the
-  // DB must be freed
-  virtual Status Close() { return Status::OK(); }
+  // called before calling the destructor so that the caller can get back a
+  // status in case there are any errors. This will not fsync the WAL files.
+  // If syncing is required, the caller must first call SyncWAL(), or Write()
+  // using an empty write batch with WriteOptions.sync=true.
+  // Regardless of the return status, the DB must be freed. If the return
+  // status is NotSupported(), then the DB implementation does cleanup in the
+  // destructor
+  virtual Status Close() { return Status::NotSupported(); }
 
   // ListColumnFamilies will open the DB specified by argument name
   // and return the list of all column families in that DB
@@ -564,6 +576,10 @@ class DB {
     //  WARNING: may slow down online queries if there are too many files.
     static const std::string kTotalSstFilesSize;
 
+    //  "rocksdb.live-sst-files-size" - returns total size (bytes) of all SST
+    //      files belong to the latest LSM tree.
+    static const std::string kLiveSstFilesSize;
+
     //  "rocksdb.base-level" - returns number of level to which L0 data will be
     //      compacted.
     static const std::string kBaseLevel;
@@ -595,6 +611,17 @@ class DB {
     //      FIFO compaction with
     //      compaction_options_fifo.allow_compaction = false.
     static const std::string kEstimateOldestKeyTime;
+
+    //  "rocksdb.block-cache-capacity" - returns block cache capacity.
+    static const std::string kBlockCacheCapacity;
+
+    //  "rocksdb.block-cache-usage" - returns the memory size for the entries
+    //      residing in block cache.
+    static const std::string kBlockCacheUsage;
+
+    // "rocksdb.block-cache-pinned-usage" - returns the memory size for the
+    //      entries being pinned.
+    static const std::string kBlockCachePinnedUsage;
   };
 #endif /* ROCKSDB_LITE */
 
@@ -639,6 +666,7 @@ class DB {
   //  "rocksdb.estimate-live-data-size"
   //  "rocksdb.min-log-number-to-keep"
   //  "rocksdb.total-sst-files-size"
+  //  "rocksdb.live-sst-files-size"
   //  "rocksdb.base-level"
   //  "rocksdb.estimate-pending-compaction-bytes"
   //  "rocksdb.num-running-compactions"
@@ -646,6 +674,9 @@ class DB {
   //  "rocksdb.actual-delayed-write-rate"
   //  "rocksdb.is-write-stopped"
   //  "rocksdb.estimate-oldest-key-time"
+  //  "rocksdb.block-cache-capacity"
+  //  "rocksdb.block-cache-usage"
+  //  "rocksdb.block-cache-pinned-usage"
   virtual bool GetIntProperty(ColumnFamilyHandle* column_family,
                               const Slice& property, uint64_t* value) = 0;
   virtual bool GetIntProperty(const Slice& property, uint64_t* value) {
@@ -797,19 +828,22 @@ class DB {
       const CompactionOptions& compact_options,
       ColumnFamilyHandle* column_family,
       const std::vector<std::string>& input_file_names,
-      const int output_level, const int output_path_id = -1) = 0;
+      const int output_level, const int output_path_id = -1,
+      std::vector<std::string>* const output_file_names = nullptr) = 0;
 
   virtual Status CompactFiles(
       const CompactionOptions& compact_options,
       const std::vector<std::string>& input_file_names,
-      const int output_level, const int output_path_id = -1) {
+      const int output_level, const int output_path_id = -1,
+      std::vector<std::string>* const output_file_names = nullptr) {
     return CompactFiles(compact_options, DefaultColumnFamily(),
-                        input_file_names, output_level, output_path_id);
+                        input_file_names, output_level, output_path_id,
+                        output_file_names);
   }
 
   // This function will wait until all currently running background processes
   // finish. After it returns, no background process will be run until
-  // UnblockBackgroundWork is called
+  // ContinueBackgroundWork is called
   virtual Status PauseBackgroundWork() = 0;
   virtual Status ContinueBackgroundWork() = 0;
 
@@ -869,7 +903,7 @@ class DB {
 
   // Flush the WAL memory buffer to the file. If sync is true, it calls SyncWAL
   // afterwards.
-  virtual Status FlushWAL(bool sync) {
+  virtual Status FlushWAL(bool /*sync*/) {
     return Status::NotSupported("FlushWAL not implemented");
   }
   // Sync the wal. Note that Write() followed by SyncWAL() is not exactly the
@@ -1123,13 +1157,14 @@ class DB {
       ColumnFamilyHandle* column_family, const Range* range, std::size_t n,
       TablePropertiesCollection* props) = 0;
 
-  virtual Status SuggestCompactRange(ColumnFamilyHandle* column_family,
-                                     const Slice* begin, const Slice* end) {
+  virtual Status SuggestCompactRange(ColumnFamilyHandle* /*column_family*/,
+                                     const Slice* /*begin*/,
+                                     const Slice* /*end*/) {
     return Status::NotSupported("SuggestCompactRange() is not implemented.");
   }
 
-  virtual Status PromoteL0(ColumnFamilyHandle* column_family,
-                           int target_level) {
+  virtual Status PromoteL0(ColumnFamilyHandle* /*column_family*/,
+                           int /*target_level*/) {
     return Status::NotSupported("PromoteL0() is not implemented.");
   }
 
@@ -1146,7 +1181,9 @@ class DB {
 
 // Destroy the contents of the specified database.
 // Be very careful using this method.
-Status DestroyDB(const std::string& name, const Options& options);
+Status DestroyDB(const std::string& name, const Options& options,
+                 const std::vector<ColumnFamilyDescriptor>& column_families =
+                   std::vector<ColumnFamilyDescriptor>());
 
 #ifndef ROCKSDB_LITE
 // If a DB cannot be opened, you may attempt to call this method to

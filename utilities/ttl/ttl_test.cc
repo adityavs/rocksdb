@@ -301,8 +301,8 @@ class TtlTest : public testing::Test {
     // Keeps key if it is in [kSampleSize_/3, 2*kSampleSize_/3),
     // Change value if it is in [2*kSampleSize_/3, kSampleSize_)
     // Eg. kSampleSize_=6. Drop:key0-1...Keep:key2-3...Change:key4-5...
-    virtual bool Filter(int level, const Slice& key,
-                        const Slice& value, std::string* new_value,
+    virtual bool Filter(int /*level*/, const Slice& key, const Slice& /*value*/,
+                        std::string* new_value,
                         bool* value_changed) const override {
       assert(new_value != nullptr);
 
@@ -351,7 +351,7 @@ class TtlTest : public testing::Test {
       }
 
       virtual std::unique_ptr<CompactionFilter> CreateCompactionFilter(
-          const CompactionFilter::Context& context) override {
+          const CompactionFilter::Context& /*context*/) override {
         return std::unique_ptr<CompactionFilter>(
             new TestFilter(kSampleSize_, kNewValue_));
       }
@@ -638,6 +638,7 @@ TEST_F(TtlTest, ChangeTtlOnOpenDb) {
 
   OpenTtl(1);                                  // T=0:Open the db with ttl = 2
   SetTtl(3);
+  // @lint-ignore TXT2 T25377293 Grandfathered in
   PutValues(0, kSampleSize_);		       // T=0:Insert Set1. Delete at t=2
   SleepCompactCheck(2, 0, kSampleSize_, true); // T=2:Set1 should be there
   CloseTtl();
@@ -654,7 +655,7 @@ int main(int argc, char** argv) {
 #else
 #include <stdio.h>
 
-int main(int argc, char** argv) {
+int main(int /*argc*/, char** /*argv*/) {
   fprintf(stderr, "SKIPPED as DBWithTTL is not supported in ROCKSDB_LITE\n");
   return 0;
 }

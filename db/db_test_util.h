@@ -137,8 +137,8 @@ class SpecialMemTableRep : public MemTableRep {
   // Insert key into the list.
   // REQUIRES: nothing that compares equal to key is currently in the list.
   virtual void Insert(KeyHandle handle) override {
-    memtable_->Insert(handle);
     num_entries_++;
+    memtable_->Insert(handle);
   }
 
   // Returns true iff an entry that compares equal to key is in the list.
@@ -187,7 +187,7 @@ class SpecialSkipListFactory : public MemTableRepFactory {
   using MemTableRepFactory::CreateMemTableRep;
   virtual MemTableRep* CreateMemTableRep(
       const MemTableRep::KeyComparator& compare, Allocator* allocator,
-      const SliceTransform* transform, Logger* logger) override {
+      const SliceTransform* transform, Logger* /*logger*/) override {
     return new SpecialMemTableRep(
         allocator, factory_.CreateMemTableRep(compare, allocator, transform, 0),
         num_entries_flush_);
@@ -451,8 +451,9 @@ class SpecialEnv : public EnvWrapper {
     return s;
   }
 
-  Status NewSequentialFile(const std::string& f, unique_ptr<SequentialFile>* r,
-                           const EnvOptions& soptions) override {
+  virtual Status NewSequentialFile(const std::string& f,
+                                   unique_ptr<SequentialFile>* r,
+                                   const EnvOptions& soptions) override {
     class CountingFile : public SequentialFile {
      public:
       CountingFile(unique_ptr<SequentialFile>&& target,
@@ -605,7 +606,7 @@ class MockTimeEnv : public EnvWrapper {
   }
 
  private:
-  uint64_t current_time_ = 0;
+  std::atomic<uint64_t> current_time_{0};
 };
 
 #ifndef ROCKSDB_LITE
@@ -803,7 +804,7 @@ class DBTestBase : public testing::Test {
 
   void DestroyAndReopen(const Options& options);
 
-  void Destroy(const Options& options);
+  void Destroy(const Options& options, bool delete_cf_paths = false);
 
   Status ReadOnlyReopen(const Options& options);
 
@@ -903,7 +904,8 @@ class DBTestBase : public testing::Test {
 
   std::string DumpSSTableList();
 
-  void GetSstFiles(std::string path, std::vector<std::string>* files);
+  static void GetSstFiles(Env* env, std::string path,
+                          std::vector<std::string>* files);
 
   int GetSstFileCount(std::string path);
 

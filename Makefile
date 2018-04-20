@@ -76,7 +76,9 @@ ifeq ($(MAKECMDGOALS),install)
 endif
 
 ifeq ($(MAKECMDGOALS),rocksdbjavastatic)
-	DEBUG_LEVEL=0
+	ifneq ($(DEBUG_LEVEL),2)
+		DEBUG_LEVEL=0
+	endif
 endif
 
 ifeq ($(MAKECMDGOALS),rocksdbjavastaticrelease)
@@ -232,9 +234,13 @@ endif
 # USAN doesn't work well with jemalloc. If we're compiling with USAN, we should use regular malloc.
 ifdef COMPILE_WITH_UBSAN
 	DISABLE_JEMALLOC=1
-	EXEC_LDFLAGS += -fsanitize=undefined
-	PLATFORM_CCFLAGS += -fsanitize=undefined -DROCKSDB_UBSAN_RUN
-	PLATFORM_CXXFLAGS += -fsanitize=undefined -DROCKSDB_UBSAN_RUN
+	# Suppress alignment warning because murmurhash relies on casting unaligned
+	# memory to integer. Fixing it may cause performance regression. 3-way crc32
+	# relies on it too, although it can be rewritten to eliminate with minimal
+	# performance regression.
+	EXEC_LDFLAGS += -fsanitize=undefined -fno-sanitize-recover=all
+	PLATFORM_CCFLAGS += -fsanitize=undefined -fno-sanitize-recover=all -DROCKSDB_UBSAN_RUN
+	PLATFORM_CXXFLAGS += -fsanitize=undefined -fno-sanitize-recover=all -DROCKSDB_UBSAN_RUN
 endif
 
 ifdef ROCKSDB_VALGRIND_RUN
@@ -272,7 +278,11 @@ endif
 default: all
 
 WARNING_FLAGS = -W -Wextra -Wall -Wsign-compare -Wshadow \
-  -Wno-unused-parameter
+  -Wunused-parameter
+
+ifeq ($(PLATFORM), OS_OPENBSD)
+	WARNING_FLAGS += -Wno-unused-lambda-capture
+endif
 
 ifndef DISABLE_WARNING_AS_ERROR
 	WARNING_FLAGS += -Werror
@@ -402,7 +412,6 @@ TESTS = \
 	db_range_del_test \
 	db_sst_test \
 	db_tailing_iter_test \
-	db_universal_compaction_test \
 	db_io_failure_test \
 	db_properties_test \
 	db_table_properties_test \
@@ -467,6 +476,7 @@ TESTS = \
 	write_batch_with_index_test \
 	write_controller_test\
 	deletefile_test \
+	obsolete_files_test \
 	table_test \
 	geodb_test \
 	delete_scheduler_test \
@@ -504,6 +514,7 @@ TESTS = \
 	repair_test \
 	env_timed_test \
 	write_prepared_transaction_test \
+	db_universal_compaction_test \
 
 PARALLEL_TEST = \
 	backupable_db_test \
@@ -523,6 +534,10 @@ PARALLEL_TEST = \
 	transaction_test \
 	write_prepared_transaction_test \
 
+# options_settable_test doesn't pass with UBSAN as we use hack in the test
+ifdef COMPILE_WITH_UBSAN
+        TESTS := $(shell echo $(TESTS) | sed 's/\boptions_settable_test\b//g')
+endif
 SUBSET := $(TESTS)
 ifdef ROCKSDBTESTS_START
         SUBSET := $(shell echo $(SUBSET) | sed 's/^.*$(ROCKSDBTESTS_START)/$(ROCKSDBTESTS_START)/')
@@ -630,7 +645,7 @@ ifeq ($(HAVE_POWER8),1)
 shared_all_libobjects = $(shared_libobjects) $(shared-ppc-objects)
 endif
 $(SHARED4): $(shared_all_libobjects)
-	$(CXX) $(PLATFORM_SHARED_LDFLAGS)$(SHARED3) $(CXXFLAGS) $(PLATFORM_SHARED_CFLAGS) $(shared_libobjects) $(LDFLAGS) -o $@
+	$(CXX) $(PLATFORM_SHARED_LDFLAGS)$(SHARED3) $(CXXFLAGS) $(PLATFORM_SHARED_CFLAGS) $(shared_all_libobjects) $(LDFLAGS) -o $@
 
 endif  # PLATFORM_SHARED_EXT
 
@@ -666,7 +681,7 @@ coverage:
 	COVERAGEFLAGS="-fprofile-arcs -ftest-coverage" LDFLAGS+="-lgcov" $(MAKE) J=1 all check
 	cd coverage && ./coverage_test.sh
         # Delete intermediate files
-	find . -type f -regex ".*\.\(\(gcda\)\|\(gcno\)\)" -exec rm {} \;
+	$(FIND) . -type f -regex ".*\.\(\(gcda\)\|\(gcno\)\)" -exec rm {} \;
 
 ifneq (,$(filter check parallel_check,$(MAKECMDGOALS)),)
 # Use /dev/shm if it has the sticky bit set (otherwise, /tmp),
@@ -783,7 +798,7 @@ check_0:
 	  | grep -E '$(tests-regexp)'					\
 	  | build_tools/gnu_parallel -j$(J) --plain --joblog=LOG $$eta --gnu '{} >& t/log-{/}'
 
-valgrind-blacklist-regexp = InlineSkipTest.ConcurrentInsert|TransactionTest.DeadlockStress|DBCompactionTest.SuggestCompactRangeNoTwoLevel0Compactions|BackupableDBTest.RateLimiting|DBTest.CloseSpeedup|DBTest.ThreadStatusFlush|DBTest.RateLimitingTest|DBTest.EncodeDecompressedBlockSizeTest|FaultInjectionTest.UninstalledCompaction|HarnessTest.Randomized|ExternalSSTFileTest.CompactDuringAddFileRandom|ExternalSSTFileTest.IngestFileWithGlobalSeqnoRandomized
+valgrind-blacklist-regexp = InlineSkipTest.ConcurrentInsert|TransactionTest.DeadlockStress|DBCompactionTest.SuggestCompactRangeNoTwoLevel0Compactions|BackupableDBTest.RateLimiting|DBTest.CloseSpeedup|DBTest.ThreadStatusFlush|DBTest.RateLimitingTest|DBTest.EncodeDecompressedBlockSizeTest|FaultInjectionTest.UninstalledCompaction|HarnessTest.Randomized|ExternalSSTFileTest.CompactDuringAddFileRandom|ExternalSSTFileTest.IngestFileWithGlobalSeqnoRandomized|MySQLStyleTransactionTest.TransactionStressTest
 
 .PHONY: valgrind_check_0
 valgrind_check_0:
@@ -813,7 +828,7 @@ CLEAN_FILES += t LOG $(TMPD)
 # regardless of their duration. As with any use of "watch", hit ^C to
 # interrupt.
 watch-log:
-	watch --interval=0 'sort -k7,7nr -k4,4gr LOG|$(quoted_perl_command)'
+	$(WATCH) --interval=0 'sort -k7,7nr -k4,4gr LOG|$(quoted_perl_command)'
 
 # If J != 1 and GNU parallel is installed, run the tests in parallel,
 # via the check_0 rule above.  Otherwise, run them sequentially.
@@ -978,14 +993,14 @@ rocksdb.h rocksdb.cc: build_tools/amalgamate.py Makefile $(LIB_SOURCES) unity.cc
 clean:
 	rm -f $(BENCHMARKS) $(TOOLS) $(TESTS) $(LIBRARY) $(SHARED)
 	rm -rf $(CLEAN_FILES) ios-x86 ios-arm scan_build_report
-	find . -name "*.[oda]" -exec rm -f {} \;
-	find . -type f -regex ".*\.\(\(gcda\)\|\(gcno\)\)" -exec rm {} \;
+	$(FIND) . -name "*.[oda]" -exec rm -f {} \;
+	$(FIND) . -type f -regex ".*\.\(\(gcda\)\|\(gcno\)\)" -exec rm {} \;
 	rm -rf bzip2* snappy* zlib* lz4* zstd*
 	cd java; $(MAKE) clean
 
 tags:
-	ctags * -R
-	cscope -b `find . -name '*.cc'` `find . -name '*.h'` `find . -name '*.c'`
+	ctags -R .
+	cscope -b `$(FIND) . -name '*.cc'` `$(FIND) . -name '*.h'` `$(FIND) . -name '*.c'`
 	ctags -e -R -o etags *
 
 format:
@@ -1368,6 +1383,9 @@ options_file_test: db/options_file_test.o $(LIBOBJECTS) $(TESTHARNESS)
 deletefile_test: db/deletefile_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
+obsolete_files_test: db/obsolete_files_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
 geodb_test: utilities/geodb/geodb_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
@@ -1502,10 +1520,10 @@ uninstall:
 
 install-headers:
 	install -d $(INSTALL_PATH)/lib
-	for header_dir in `find "include/rocksdb" -type d`; do \
+	for header_dir in `$(FIND) "include/rocksdb" -type d`; do \
 		install -d $(INSTALL_PATH)/$$header_dir; \
 	done
-	for header in `find "include/rocksdb" -type f -name *.h`; do \
+	for header in `$(FIND) "include/rocksdb" -type f -name *.h`; do \
 		install -C -m 644 $$header $(INSTALL_PATH)/$$header; \
 	done
 
@@ -1532,6 +1550,12 @@ install: install-static
 JAVA_INCLUDE = -I$(JAVA_HOME)/include/ -I$(JAVA_HOME)/include/linux
 ifeq ($(PLATFORM), OS_SOLARIS)
 	ARCH := $(shell isainfo -b)
+else ifeq ($(PLATFORM), OS_OPENBSD)
+	ifneq (,$(filter $(MACHINE), amd64 arm64 sparc64))
+		ARCH := 64
+	else
+		ARCH := 32
+	endif
 else
 	ARCH := $(shell getconf LONG_BIT)
 endif
@@ -1562,6 +1586,7 @@ LZ4_DOWNLOAD_BASE ?= https://github.com/lz4/lz4/archive
 ZSTD_VER ?= 1.3.3
 ZSTD_SHA256 ?= a77c47153ee7de02626c5b2a097005786b71688be61e9fb81806a011f90b297b
 ZSTD_DOWNLOAD_BASE ?= https://github.com/facebook/zstd/archive
+CURL_SSL_OPTS ?= --tlsv1
 
 ifeq ($(PLATFORM), OS_MACOSX)
 	ROCKSDBJNILIB = librocksdbjni-osx.jnilib
@@ -1590,6 +1615,11 @@ ifeq ($(PLATFORM), OS_AIX)
 	EXTRACT_SOURCES = gunzip < TAR_GZ | tar xvf -
 	SNAPPY_MAKE_TARGET = libsnappy.la
 endif
+ifeq ($(PLATFORM), OS_OPENBSD)
+        JAVA_INCLUDE = -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/openbsd
+	ROCKSDBJNILIB = librocksdbjni-openbsd$(ARCH).so
+        ROCKSDB_JAR = rocksdbjni-$(ROCKSDB_MAJOR).$(ROCKSDB_MINOR).$(ROCKSDB_PATCH)-openbsd$(ARCH).jar
+endif
 
 libz.a:
 	-rm -rf zlib-$(ZLIB_VER)
@@ -1617,7 +1647,7 @@ libbz2.a:
 
 libsnappy.a:
 	-rm -rf snappy-$(SNAPPY_VER)
-	curl -O -L ${SNAPPY_DOWNLOAD_BASE}/$(SNAPPY_VER)/snappy-$(SNAPPY_VER).tar.gz
+	curl -O -L ${CURL_SSL_OPTS} ${SNAPPY_DOWNLOAD_BASE}/$(SNAPPY_VER)/snappy-$(SNAPPY_VER).tar.gz
 	SNAPPY_SHA256_ACTUAL=`$(SHA256_CMD) snappy-$(SNAPPY_VER).tar.gz | cut -d ' ' -f 1`; \
 	if [ "$(SNAPPY_SHA256)" != "$$SNAPPY_SHA256_ACTUAL" ]; then \
 		echo snappy-$(SNAPPY_VER).tar.gz checksum mismatch, expected=\"$(SNAPPY_SHA256)\" actual=\"$$SNAPPY_SHA256_ACTUAL\"; \
@@ -1630,7 +1660,7 @@ libsnappy.a:
 
 liblz4.a:
 	-rm -rf lz4-$(LZ4_VER)
-	curl -O -L ${LZ4_DOWNLOAD_BASE}/v$(LZ4_VER).tar.gz
+	curl -O -L ${CURL_SSL_OPTS} ${LZ4_DOWNLOAD_BASE}/v$(LZ4_VER).tar.gz
 	mv v$(LZ4_VER).tar.gz lz4-$(LZ4_VER).tar.gz
 	LZ4_SHA256_ACTUAL=`$(SHA256_CMD) lz4-$(LZ4_VER).tar.gz | cut -d ' ' -f 1`; \
 	if [ "$(LZ4_SHA256)" != "$$LZ4_SHA256_ACTUAL" ]; then \
@@ -1643,7 +1673,7 @@ liblz4.a:
 
 libzstd.a:
 	-rm -rf zstd-$(ZSTD_VER)
-	curl -O -L ${ZSTD_DOWNLOAD_BASE}/v$(ZSTD_VER).tar.gz
+	curl -O -L ${CURL_SSL_OPTS} ${ZSTD_DOWNLOAD_BASE}/v$(ZSTD_VER).tar.gz
 	mv v$(ZSTD_VER).tar.gz zstd-$(ZSTD_VER).tar.gz
 	ZSTD_SHA256_ACTUAL=`$(SHA256_CMD) zstd-$(ZSTD_VER).tar.gz | cut -d ' ' -f 1`; \
 	if [ "$(ZSTD_SHA256)" != "$$ZSTD_SHA256_ACTUAL" ]; then \
@@ -1691,7 +1721,9 @@ rocksdbjavastatic: $(java_static_all_libobjects)
 	  -o ./java/target/$(ROCKSDBJNILIB) $(JNI_NATIVE_SOURCES) \
 	  $(java_static_all_libobjects) $(COVERAGEFLAGS) \
 	  $(JAVA_COMPRESSIONS) $(JAVA_STATIC_LDFLAGS)
-	cd java/target;strip $(STRIPFLAGS) $(ROCKSDBJNILIB)
+	cd java/target;if [ "$(DEBUG_LEVEL)" == "0" ]; then \
+		strip $(STRIPFLAGS) $(ROCKSDBJNILIB); \
+	fi
 	cd java;jar -cf target/$(ROCKSDB_JAR) HISTORY*.md
 	cd java/target;jar -uf $(ROCKSDB_JAR) $(ROCKSDBJNILIB)
 	cd java/target/classes;jar -uf ../$(ROCKSDB_JAR) org/rocksdb/*.class org/rocksdb/util/*.class

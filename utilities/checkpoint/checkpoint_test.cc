@@ -366,7 +366,7 @@ TEST_F(CheckpointTest, CheckpointCFNoFlush) {
   Status s;
   // Take a snapshot
   rocksdb::SyncPoint::GetInstance()->SetCallBack(
-      "DBImpl::BackgroundCallFlush:start", [&](void* arg) {
+      "DBImpl::BackgroundCallFlush:start", [&](void* /*arg*/) {
         // Flush should never trigger.
         FAIL();
       });
@@ -564,6 +564,27 @@ TEST_F(CheckpointTest, CurrentFileModifiedWhileCheckpointing2PC) {
   delete txdb;
 }
 
+TEST_F(CheckpointTest, CheckpointInvalidDirectoryName) {
+  for (std::string checkpoint_dir : {"", "/", "////"}) {
+    Checkpoint* checkpoint;
+    ASSERT_OK(Checkpoint::Create(db_, &checkpoint));
+    ASSERT_TRUE(checkpoint->CreateCheckpoint("").IsInvalidArgument());
+    delete checkpoint;
+  }
+}
+
+TEST_F(CheckpointTest, CheckpointWithParallelWrites) {
+  // When run with TSAN, this exposes the data race fixed in
+  // https://github.com/facebook/rocksdb/pull/3603
+  ASSERT_OK(Put("key1", "val1"));
+  port::Thread thread([this]() { ASSERT_OK(Put("key2", "val2")); });
+  Checkpoint* checkpoint;
+  ASSERT_OK(Checkpoint::Create(db_, &checkpoint));
+  ASSERT_OK(checkpoint->CreateCheckpoint(snapshot_name_));
+  delete checkpoint;
+  thread.join();
+}
+
 }  // namespace rocksdb
 
 int main(int argc, char** argv) {
@@ -575,7 +596,7 @@ int main(int argc, char** argv) {
 #else
 #include <stdio.h>
 
-int main(int argc, char** argv) {
+int main(int /*argc*/, char** /*argv*/) {
   fprintf(stderr, "SKIPPED as Checkpoint is not supported in ROCKSDB_LITE\n");
   return 0;
 }

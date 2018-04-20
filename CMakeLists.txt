@@ -56,7 +56,7 @@ if(MSVC)
   include(${CMAKE_CURRENT_SOURCE_DIR}/thirdparty.inc)
 else()
   if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
-    # FreeBSD has jemaloc as default malloc
+    # FreeBSD has jemalloc as default malloc
     # but it does not have all the jemalloc files in include/...
     set(WITH_JEMALLOC ON)
   else()
@@ -66,7 +66,7 @@ else()
       include_directories(${JEMALLOC_INCLUDE_DIR})
     endif()
   endif()
-  
+
   # No config file for this
   option(WITH_GFLAGS "build with GFlags" ON)
   if(WITH_GFLAGS)
@@ -132,19 +132,17 @@ endif()
 
 string(REGEX REPLACE "[^0-9a-f]+" "" GIT_SHA "${GIT_SHA}")
 
-set(SH_CMD "sh")
-execute_process(COMMAND
-  ${SH_CMD} -c "build_tools/version.sh full"
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-  OUTPUT_VARIABLE ROCKSDB_VERSION
-)
-string(STRIP "${ROCKSDB_VERSION}" ROCKSDB_VERSION)
-execute_process(COMMAND
-  ${SH_CMD} -c "build_tools/version.sh major"
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-  OUTPUT_VARIABLE ROCKSDB_VERSION_MAJOR
-)
-string(STRIP "${ROCKSDB_VERSION_MAJOR}" ROCKSDB_VERSION_MAJOR)
+
+# Read rocksdb version from version.h header file.
+file(READ include/rocksdb/version.h version_header_file)
+string(REGEX MATCH "#define ROCKSDB_MAJOR ([0-9]+)" _ ${version_header_file})
+set(ROCKSDB_VERSION_MAJOR ${CMAKE_MATCH_1})
+string(REGEX MATCH "#define ROCKSDB_MINOR ([0-9]+)" _ ${version_header_file})
+set(ROCKSDB_VERSION_MINOR ${CMAKE_MATCH_1})
+string(REGEX MATCH "#define ROCKSDB_PATCH ([0-9]+)" _ ${version_header_file})
+set(ROCKSDB_VERSION_PATCH ${CMAKE_MATCH_1})
+set(ROCKSDB_VERSION ${ROCKSDB_VERSION_MAJOR}.${ROCKSDB_VERSION_MINOR}.${ROCKSDB_VERSION_PATCH})
+
 
 option(WITH_MD_LIBRARY "build with MD" ON)
 if(WIN32 AND MSVC)
@@ -229,6 +227,7 @@ int main() {
 unset(CMAKE_REQUIRED_FLAGS)
 if(HAVE_SSE42)
   add_definitions(-DHAVE_SSE42)
+  add_definitions(-DHAVE_PCLMUL)
 elseif(FORCE_SSE42)
   message(FATAL_ERROR "FORCE_SSE42=ON but unable to compile with SSE4.2 enabled")
 endif()
@@ -569,12 +568,14 @@ set(SOURCES
         util/status_message.cc
         util/string_util.cc
         util/sync_point.cc
+        util/sync_point_impl.cc
         util/testutil.cc
         util/thread_local.cc
         util/threadpool_imp.cc
         util/transaction_test_util.cc
         util/xxhash.cc
         utilities/backupable/backupable_db.cc
+        utilities/blob_db/blob_compaction_filter.cc
         utilities/blob_db/blob_db.cc
         utilities/blob_db/blob_db_impl.cc
         utilities/blob_db/blob_dump_tool.cc
@@ -602,6 +603,7 @@ set(SOURCES
         utilities/leveldb_options/leveldb_options.cc
         utilities/lua/rocks_lua_compaction_filter.cc
         utilities/memory/memory_util.cc
+        utilities/merge_operators/bytesxor.cc
         utilities/merge_operators/max.cc
         utilities/merge_operators/put.cc
         utilities/merge_operators/string_append/stringappend.cc
@@ -673,6 +675,14 @@ endif()
 set(ROCKSDB_STATIC_LIB rocksdb${ARTIFACT_SUFFIX})
 set(ROCKSDB_SHARED_LIB rocksdb-shared${ARTIFACT_SUFFIX})
 set(ROCKSDB_IMPORT_LIB ${ROCKSDB_SHARED_LIB})
+
+option(WITH_LIBRADOS "Build with librados" OFF)
+if(WITH_LIBRADOS)
+  list(APPEND SOURCES
+    utilities/env_librados.cc)
+  list(APPEND THIRDPARTY_LIBS rados)
+endif()
+
 if(WIN32)
   set(SYSTEM_LIBS ${SYSTEM_LIBS} Shlwapi.lib Rpcrt4.lib)
   set(LIBS ${ROCKSDB_STATIC_LIB} ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
@@ -689,13 +699,6 @@ else()
                         SOVERSION ${ROCKSDB_VERSION_MAJOR}
                         CXX_STANDARD 11
                         OUTPUT_NAME "rocksdb")
-endif()
-
-option(WITH_LIBRADOS "Build with librados" OFF)
-if(WITH_LIBRADOS)
-  list(APPEND SOURCES
-    utilities/env_librados.cc)
-  list(APPEND THIRDPARTY_LIBS rados)
 endif()
 
 add_library(${ROCKSDB_STATIC_LIB} STATIC ${SOURCES})
@@ -830,6 +833,7 @@ if(WITH_TESTS)
         db/db_write_test.cc
         db/dbformat_test.cc
         db/deletefile_test.cc
+        db/obsolete_files_test.cc
         db/external_sst_file_basic_test.cc
         db/external_sst_file_test.cc
         db/fault_injection_test.cc
